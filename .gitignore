@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+*.pptx
+tmp/
+temp/
+*.zip
+# test_*.py
+.env
