@@ -1434,7 +1434,9 @@ def apply_recreate(
     config: TransferConfig,
 ) -> dict[str, Any]:
     """Recreate mode: analyze template style, extract content, rebuild from scratch."""
-    from pptx_template_transfer.analysis.theme_extractor import analyze_template
+    from pptx_template_transfer.analysis.theme_extractor import (
+        analyze_template, extract_source_colors,
+    )
     from pptx_template_transfer.extraction.content_extractor import extract_all_content
     from pptx_template_transfer.transform.layout_mapper import map_content_to_layout
 
@@ -1459,6 +1461,15 @@ def apply_recreate(
         f"({style.logo_width}x{style.logo_height})"
     )
     print(f"  Footer: '{style.footer_company}'")
+
+    # Extract source colors for reference
+    source_colors = extract_source_colors(content_path)
+    report["source_colors"] = source_colors
+    report["target_colors"] = {
+        "primary": style.color_primary,
+        "secondary": style.color_secondary,
+        "text": style.color_text,
+    }
 
     # Step 2: Extract content
     print("\n[recreate] Extracting content...")

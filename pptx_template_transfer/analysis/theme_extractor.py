@@ -190,6 +190,86 @@ def _extract_footer_text(prs: Presentation) -> str:
     return ""
 
 
+_FONT_FALLBACKS: dict[str, list[str]] = {
+    # Serif
+    "Georgia": ["Cambria", "Times New Roman", "serif"],
+    "Cambria": ["Georgia", "Times New Roman", "serif"],
+    "Garamond": ["Georgia", "Cambria", "serif"],
+    # Sans-serif
+    "Montserrat": ["Segoe UI", "Calibri", "Arial"],
+    "Lato": ["Segoe UI", "Calibri", "Arial"],
+    "Open Sans": ["Segoe UI", "Calibri", "Arial"],
+    "Roboto": ["Segoe UI", "Calibri", "Arial"],
+    "Poppins": ["Segoe UI", "Calibri", "Arial"],
+    "Inter": ["Segoe UI", "Calibri", "Arial"],
+    "Raleway": ["Segoe UI", "Calibri", "Arial"],
+    "Calibri Light": ["Calibri", "Segoe UI Light", "Arial"],
+    "Segoe UI Light": ["Calibri Light", "Segoe UI", "Arial"],
+    # Mono
+    "Fira Code": ["Consolas", "Courier New", "monospace"],
+    "Source Code Pro": ["Consolas", "Courier New", "monospace"],
+}
+# Safe system fonts that are always available on Windows/Mac/Linux
+_SAFE_SANS = ["Calibri", "Arial", "Segoe UI"]
+_SAFE_SERIF = ["Times New Roman", "Georgia", "Cambria"]
+
+
+def _resolve_font(font_name: str) -> str:
+    """Return the font name if it's a known safe font, otherwise find a fallback.
+
+    python-pptx embeds font *names* into the XML; the font must be
+    installed on the rendering machine for it to display.  We keep the
+    original name unless it's known to be exotic, in which case we
+    check our fallback table.
+
+    Note: this does NOT verify the font is installed (no reliable
+    cross-platform API).  It just resolves known problematic fonts
+    to universally available alternatives.
+    """
+    if not font_name:
+        return "Calibri"
+    # Already a safe font?
+    safe_all = set(_SAFE_SANS) | set(_SAFE_SERIF)
+    if font_name in safe_all:
+        return font_name
+    # Check fallback table
+    if font_name in _FONT_FALLBACKS:
+        # Return first fallback that's in the safe set, else first fallback
+        for fb in _FONT_FALLBACKS[font_name]:
+            if fb in safe_all:
+                return fb
+        return _FONT_FALLBACKS[font_name][0]
+    # Unknown font — keep it (it might be installed)
+    return font_name
+
+
+def extract_source_colors(content_path: Path) -> dict[str, str]:
+    """Extract dominant colors from a source deck for remapping."""
+    prs = Presentation(str(content_path))
+    color_freq: Counter[str] = Counter()
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            for para in shape.text_frame.paragraphs:
+                for run in para.runs:
+                    try:
+                        rgb_val = run.font.color.rgb
+                        if rgb_val:
+                            hex_val = str(rgb_val)
+                            if hex_val not in ("000000", "FFFFFF", ""):
+                                color_freq[hex_val] += len(run.text or "")
+                    except (AttributeError, TypeError):
+                        continue
+    result = {"primary": "000000", "secondary": "333333"}
+    top = color_freq.most_common(2)
+    if top:
+        result["primary"] = top[0][0]
+    if len(top) > 1:
+        result["secondary"] = top[1][0]
+    return result
+
+
 def analyze_template(template_path: Path) -> TemplateStyle:
     """Analyze a template PPTX and extract its visual DNA."""
     prs = Presentation(str(template_path))
@@ -197,7 +277,9 @@ def analyze_template(template_path: Path) -> TemplateStyle:
     style.slide_width = prs.slide_width
     style.slide_height = prs.slide_height
 
-    style.heading_font, style.body_font = _extract_theme_fonts(prs)
+    heading_raw, body_raw = _extract_theme_fonts(prs)
+    style.heading_font = _resolve_font(heading_raw)
+    style.body_font = _resolve_font(body_raw)
 
     colors = _extract_colors(prs)
     style.color_primary = colors["primary"]
