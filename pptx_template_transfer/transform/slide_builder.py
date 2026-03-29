@@ -23,6 +23,7 @@ from pptx_template_transfer.models import (
     BrandingPolicy,
     ContentData,
     ParagraphData,
+    RunData,
     TemplateStyle,
     TextBlock,
     TransferConfig,
@@ -53,39 +54,94 @@ _TYPE_LABELS: dict[str, str] = {
 }
 
 
-def _generate_section_label(content: ContentData) -> str:
-    """Generate a clean, professional section label from source content.
+_BODY_KEYWORD_LABELS: dict[str, str] = {
+    "deploy": "DEPLOYMENT",
+    "incident": "INCIDENT",
+    "security": "SECURITY",
+    "roadmap": "ROADMAP",
+    "conclusion": "SUMMARY",
+    "next steps": "NEXT STEPS",
+    "capability": "CAPABILITIES",
+    "recommendation": "RECOMMENDATIONS",
+    "enhancement": "ENHANCEMENTS",
+    "enforcement": "ENFORCEMENT",
+    "restriction": "POLICY",
+    "false positive": "ANALYSIS",
+    "validation": "VALIDATION",
+    "strategy": "STRATEGY",
+    "architecture": "ARCHITECTURE",
+    "overview": "OVERVIEW",
+}
 
-    Rules:
-    - Use type-based label if available
-    - Otherwise derive from title: take meaningful words, max 3 words
-    - Strip punctuation artifacts (?, -, trailing prepositions)
-    - Omit label if confidence is low (result too short or weird)
+_TRAILING_JUNK = frozenset({
+    "the", "a", "an", "of", "for", "in", "on", "to", "and", "&", "with", "by",
+})
+
+
+def _generate_section_label(content: ContentData) -> tuple[str, float]:
+    """Generate a clean, professional section label with confidence score.
+
+    Returns (label, confidence) where confidence is 0.0–1.0.
+    High confidence (>=0.7): type-based or strong title match.
+    Medium confidence (0.4–0.7): body-keyword fallback.
+    Low confidence (<0.4): dropped (returns empty string).
     """
-    # Incident heuristic overrides type-based label
+    # Incident heuristic overrides type-based label — high confidence
     if _is_incident_slide(content):
-        return "INCIDENT"
+        return "INCIDENT", 1.0
 
-    # Check type-based label first
+    # Deployment heuristic — high confidence
+    if _is_deployment_slide(content):
+        return "DEPLOYMENT", 0.9
+
+    # Check type-based label first — high confidence
     type_label = _TYPE_LABELS.get(content.slide_type, "")
     if type_label:
-        return type_label
+        return type_label, 1.0
 
+    # Title-derived label
+    label, confidence = _label_from_title(content.title)
+    if label and confidence >= 0.5:
+        return label, confidence
+
+    # Body-keyword fallback — medium confidence
+    body_text = " ".join(p.text.lower() for p in content.body_paragraphs if p.text)
+    for keyword, kw_label in _BODY_KEYWORD_LABELS.items():
+        if keyword in body_text:
+            # Don't duplicate if title-derived label already covers it
+            if label and label == kw_label:
+                return label, max(confidence, 0.6)
+            if not label:
+                return kw_label, 0.5
+            # Prefer title-derived if it exists, even at low confidence
+            break
+
+    if label and confidence >= 0.4:
+        return label, confidence
+
+    # Last resort: generic fallback
     if not content.title:
-        return "OVERVIEW"
+        return "OVERVIEW", 0.3
 
-    title = content.title.strip()
+    return label or "", confidence
 
-    # Special case: if title contains a dash separator, use the part before it
-    # e.g., "Incident Overview – SSScheduler.exe" -> "INCIDENT OVERVIEW"
+
+def _label_from_title(title: str | None) -> tuple[str, float]:
+    """Extract a section label from a slide title. Returns (label, confidence)."""
+    if not title:
+        return "", 0.0
+
+    title = title.strip()
+    confidence = 0.7  # baseline for title-derived
+
+    # Split on dash/colon separators — use the part before
     for sep in [" – ", " - ", " — ", ": "]:
         if sep in title:
             title = title.split(sep)[0].strip()
+            confidence = 0.8  # separator = structured title = higher confidence
             break
 
-    # Take up to 3 words, stripping articles and prepositions from the end
     words = title.split()
-    _TRAILING_JUNK = {"the", "a", "an", "of", "for", "in", "on", "to", "and", "&", "with", "by"}
     label_words: list[str] = []
     for w in words:
         if len(label_words) >= 3:
@@ -97,18 +153,18 @@ def _generate_section_label(content: ContentData) -> str:
         label_words.pop()
 
     if not label_words:
-        return ""
+        return "", 0.0
 
     label = " ".join(label_words).upper()
-
-    # Strip trailing punctuation artifacts
     label = label.rstrip("?!:;,.-–—")
 
-    # Quality gate: label must be 2+ chars and not just a number
+    # Quality penalties
     if len(label) < 2 or label.isdigit():
-        return ""
+        return "", 0.0
+    if len(label_words) == 1 and len(label) <= 3:
+        confidence *= 0.5  # single short word = low quality
 
-    return label
+    return label, confidence
 
 log = logging.getLogger("pptx_template_transfer")
 
@@ -212,6 +268,8 @@ def _add_header(
 
 def _add_logo(slide, style: TemplateStyle) -> None:
     """Add logo image in the top-left area."""
+    if not _current_branding.show_logo:
+        return
     if not style.logo_blob:
         return
     try:
@@ -247,6 +305,9 @@ def _add_footer(
     footer_top = int(sh * 0.94)
     branding = branding or BrandingPolicy()
 
+    if not branding.show_footer:
+        return
+
     # Resolve company text
     company_text = branding.footer_company_override or style.footer_company
 
@@ -263,7 +324,7 @@ def _add_footer(
                     color_hex=style.color_muted)
 
     # Confidential (center-right)
-    if style.footer_has_confidential:
+    if style.footer_has_confidential and branding.show_confidentiality:
         conf_label = branding.confidentiality_label or "Confidential"
         tb = slide.shapes.add_textbox(
             int(sw * 0.42), footer_top, int(sw * 0.2), Pt(12),
@@ -307,6 +368,41 @@ def _add_title_text(
     p.text = title
     style_runs(p, font_name=style.heading_font, font_size_pt=font_size_pt,
                 bold=bold, color_hex=style.color_text)
+
+
+def _render_paragraph(
+    p, pd: ParagraphData, style: TemplateStyle,
+    font_size_pt: float, default_bold: bool = False,
+    color_hex: str | None = None, font_name: str | None = None,
+) -> None:
+    """Render a paragraph preserving run-level bold/italic when available.
+
+    If pd.runs is populated, each run gets individual formatting.
+    Otherwise falls back to p.text + style_runs (existing behavior).
+    """
+    color = color_hex or style.color_text
+    fname = font_name or (style.heading_font if default_bold else style.body_font)
+
+    if pd.runs and len(pd.runs) > 1:
+        # Run-level rendering — preserves intra-paragraph bold/regular mix
+        for i, rd in enumerate(pd.runs):
+            if not rd.text:
+                continue
+            if i == 0 and not p.text:
+                run = p.runs[0] if p.runs else p.add_run()
+                run.text = rd.text
+            else:
+                run = p.add_run()
+                run.text = rd.text
+            run.font.name = style.heading_font if rd.bold else fname
+            run.font.size = Pt(font_size_pt)
+            run.font.bold = rd.bold or default_bold
+            run.font.italic = rd.italic
+            run.font.color.rgb = rgb(color)
+    else:
+        p.text = pd.text
+        style_runs(p, font_name=fname, font_size_pt=font_size_pt,
+                    bold=default_bold, color_hex=color)
 
 
 def _add_body_text(
@@ -354,18 +450,14 @@ def _add_body_text(
         else:
             p = tf.add_paragraph()
 
-        p.text = pd.text
         if pd.bold:
             p.space_before = spacing_before_heading
-            style_runs(p, font_name=style.heading_font, font_size_pt=heading_pt,
-                        bold=True, color_hex=style.color_text)
+            _render_paragraph(p, pd, style, heading_pt, default_bold=True)
         elif pd.level > 0:
             p.level = pd.level
-            style_runs(p, font_name=style.body_font, font_size_pt=sub_pt,
-                        color_hex=style.color_muted)
+            _render_paragraph(p, pd, style, sub_pt, color_hex=style.color_muted)
         else:
-            style_runs(p, font_name=style.body_font, font_size_pt=body_pt,
-                        color_hex=style.color_text)
+            _render_paragraph(p, pd, style, body_pt)
 
 
 def _add_text_blocks(
@@ -576,8 +668,25 @@ def _build_title_slide(
     # NOTE: logo already added by build_slide() — no duplicate call here
 
     # Use positioned text_blocks when available (preserves original layout)
+    # Filter out blocks that match target branding to prevent contamination
     if content.text_blocks:
-        _add_text_blocks(slide, style, content.text_blocks)
+        from pptx_template_transfer.helpers import FOOTER_PATTERNS
+        target_brand = (style.footer_company or "").lower()
+        brand_override = (_current_branding.footer_company_override or "").lower()
+        filtered_blocks = []
+        for tb_block in content.text_blocks:
+            block_text = " ".join(p.text for p in tb_block.paragraphs).strip()
+            block_lower = block_text.lower()
+            # Skip blocks that match target footer/branding
+            if target_brand and target_brand in block_lower:
+                continue
+            if brand_override and brand_override in block_lower:
+                continue
+            if FOOTER_PATTERNS.match(block_text.strip()):
+                continue
+            filtered_blocks.append(tb_block)
+        if filtered_blocks:
+            _add_text_blocks(slide, style, filtered_blocks)
     else:
         # Fallback: centered title + subtitle
         title_width = int(sw * 0.7)
@@ -756,7 +865,7 @@ def _build_incident_slide(
     """
     sw, sh = style.slide_width, style.slide_height
     margin_left = int(sw * 0.054)
-    label = _generate_section_label(content)
+    label, _label_conf = _generate_section_label(content)
     _add_header(slide, style, label)
     _add_footer(slide, style, slide_number, total_slides, _current_branding)
 
@@ -875,13 +984,9 @@ def _add_card(
             first = False
         else:
             p = tf.add_paragraph()
-        p.text = pd.text
-        if pd.bold:
-            style_runs(p, font_name=style.heading_font, font_size_pt=font_pt,
-                        bold=True, color_hex=style.color_text)
-        else:
-            style_runs(p, font_name=style.body_font, font_size_pt=font_pt,
-                        color_hex=style.color_text)
+        _render_paragraph(p, pd, style, font_pt,
+                          default_bold=pd.bold,
+                          font_name=style.heading_font if pd.bold else style.body_font)
 
 
 def _build_kpi_slide(
@@ -891,7 +996,7 @@ def _build_kpi_slide(
     """Build a KPI / metrics dashboard slide with card grid."""
     sw, sh = style.slide_width, style.slide_height
     margin_left = int(sw * 0.054)
-    label = _generate_section_label(content)
+    label, _label_conf = _generate_section_label(content)
     _add_header(slide, style, label)
     _add_footer(slide, style, slide_number, total_slides, _current_branding)
 
@@ -900,20 +1005,47 @@ def _build_kpi_slide(
                         margin_left, int(sh * 0.12), int(sw * 0.85))
 
     # Group body paragraphs into metric groups (bold heading + detail lines)
+    # Use semantic_blocks if available (more reliable grouping from extractor)
     groups: list[tuple[str, list[ParagraphData]]] = []
-    current_heading = ""
-    current_items: list[ParagraphData] = []
 
-    for p in content.body_paragraphs:
-        if p.bold or (p.font_size >= 14 and len(p.text.split()) <= 8):
-            if current_heading or current_items:
-                groups.append((current_heading, current_items))
-            current_heading = p.text
-            current_items = []
-        else:
-            current_items.append(p)
-    if current_heading or current_items:
-        groups.append((current_heading, current_items))
+    if content.semantic_blocks:
+        for sb in content.semantic_blocks:
+            if sb.label:
+                groups.append((sb.label, sb.paragraphs))
+            elif sb.paragraphs:
+                # Block without a label — use first paragraph as heading
+                groups.append((sb.paragraphs[0].text, sb.paragraphs[1:]))
+
+    if not groups:
+        # Fallback: manual grouping by bold headings
+        current_heading = ""
+        current_items: list[ParagraphData] = []
+
+        for p in content.body_paragraphs:
+            if p.bold or (p.font_size >= 14 and len(p.text.split()) <= 8):
+                if current_heading or current_items:
+                    groups.append((current_heading, current_items))
+                current_heading = p.text
+                current_items = []
+            else:
+                current_items.append(p)
+        if current_heading or current_items:
+            groups.append((current_heading, current_items))
+
+        # Post-process: merge groups with empty bodies into adjacent groups
+        # This handles consecutive bold paragraphs (e.g., KPI label + value)
+        merged: list[tuple[str, list[ParagraphData]]] = []
+        for heading, items in groups:
+            if not items and merged:
+                # Empty body — treat this heading as a body line of the previous group
+                prev_heading, prev_items = merged[-1]
+                prev_items.append(ParagraphData(text=heading, bold=True))
+            else:
+                merged.append((heading, list(items)))
+        # If the very first group has no heading but has items, give it a generic title
+        if merged and not merged[0][0] and merged[0][1]:
+            merged[0] = (merged[0][1][0].text, merged[0][1][1:])
+        groups = merged if merged else groups
 
     if len(groups) >= 2:
         # Card grid layout
@@ -946,7 +1078,7 @@ def _build_roadmap_slide(
     """Build a roadmap / strategy slide with numbered steps."""
     sw, sh = style.slide_width, style.slide_height
     margin_left = int(sw * 0.054)
-    label = _generate_section_label(content)
+    label, _label_conf = _generate_section_label(content)
     _add_header(slide, style, label)
     _add_footer(slide, style, slide_number, total_slides, _current_branding)
 
@@ -1006,6 +1138,82 @@ def _build_roadmap_slide(
                             has_body_text=True)
 
 
+def _build_deployment_slide(
+    slide, style: TemplateStyle, content: ContentData,
+    slide_number: int, total_slides: int,
+) -> None:
+    """Build a deployment/status slide with structured cards instead of wall-of-text."""
+    sw, sh = style.slide_width, style.slide_height
+    margin_left = int(sw * 0.054)
+    label, _label_conf = _generate_section_label(content)
+    _add_header(slide, style, label)
+    _add_footer(slide, style, slide_number, total_slides, _current_branding)
+
+    if content.title:
+        _add_title_text(slide, style, content.title,
+                        margin_left, int(sh * 0.12), int(sw * 0.85))
+
+    # Group paragraphs into sections by bold headings
+    sections: list[tuple[str, list[ParagraphData]]] = []
+    current_heading = ""
+    current_items: list[ParagraphData] = []
+
+    for p in content.body_paragraphs:
+        if p.bold and len(p.text.split()) <= 10:
+            if current_heading or current_items:
+                sections.append((current_heading, current_items))
+            current_heading = p.text
+            current_items = []
+        else:
+            current_items.append(p)
+    if current_heading or current_items:
+        sections.append((current_heading, current_items))
+
+    if len(sections) >= 2:
+        # 2-column card layout
+        body_top = int(sh * 0.24)
+        cols = 2
+        col_w = (int(sw * 0.88) - Pt(8)) // cols
+        rows_needed = (len(sections) + cols - 1) // cols
+        row_h = min(int(sh * 0.32), (int(sh * 0.62) - Pt(8) * (rows_needed - 1)) // rows_needed)
+
+        for idx, (heading, items) in enumerate(sections):
+            r, c = divmod(idx, cols)
+            card_left = margin_left + c * (col_w + Pt(8))
+            card_top = body_top + r * (row_h + Pt(8))
+            _add_card(slide, style, heading or f"Section {idx+1}", items,
+                      card_left, card_top, col_w, row_h)
+    else:
+        # Fallback to body text
+        _add_body_text(slide, style, content.body_paragraphs,
+                       margin_left, int(sh * 0.22), int(sw * 0.88), int(sh * 0.65))
+
+    if content.images:
+        _add_content_images(slide, style, content.images, int(sh * 0.60),
+                            has_body_text=True)
+
+
+def _is_deployment_slide(content: ContentData) -> bool:
+    """Heuristic: detect deployment/status/rollout slides."""
+    title_lower = (content.title or "").lower()
+
+    # Exclude conclusion/closing/summary slides — they often echo status words
+    exclude_kw = {"conclusion", "next steps", "summary", "thank", "closing", "agenda"}
+    if any(kw in title_lower for kw in exclude_kw):
+        return False
+    if content.slide_type in ("closing", "title", "agenda", "toc"):
+        return False
+
+    deploy_kw = {"deployment", "deploy", "rollout", "implementation", "installation"}
+    status_kw = {"status", "operational", "pending", "active", "installed", "coverage"}
+    if any(kw in title_lower for kw in deploy_kw):
+        return True
+    # Check if body has multiple status-like keywords
+    body_text = " ".join(p.text.lower() for p in content.body_paragraphs)
+    hits = sum(1 for kw in status_kw if kw in body_text)
+    return hits >= 3
+
+
 def _build_generic_content_slide(
     slide, style: TemplateStyle, content: ContentData,
     slide_number: int, total_slides: int,
@@ -1013,7 +1221,7 @@ def _build_generic_content_slide(
     """Build a standard content slide (narrative, bullets, etc.)."""
     sw, sh = style.slide_width, style.slide_height
     margin_left = int(sw * 0.054)
-    label = _generate_section_label(content)
+    label, _label_conf = _generate_section_label(content)
     _add_header(slide, style, label)
     _add_footer(slide, style, slide_number, total_slides, _current_branding)
 
@@ -1101,12 +1309,17 @@ def build_slide(
     prs: Presentation, style: TemplateStyle,
     content: ContentData, slide_number: int, total_slides: int,
     branding: BrandingPolicy | None = None,
-) -> None:
-    """Build a single output slide from scratch."""
+) -> str:
+    """Build a single output slide from scratch.  Returns renderer name."""
     global _current_branding
     _current_branding = branding or BrandingPolicy()
     blank_layout = _find_blank_layout(prs)
     slide = prs.slides.add_slide(blank_layout)
+
+    # Clear inherited placeholder text from "blank" layouts
+    for ph in slide.placeholders:
+        if ph.has_text_frame:
+            ph.text_frame.clear()
 
     # Background
     _add_background(slide, style)
@@ -1119,7 +1332,9 @@ def build_slide(
     _add_logo(slide, style)
 
     # Dispatch to type-specific renderer
-    if _is_incident_slide(content):
+    if _is_deployment_slide(content):
+        renderer = _build_deployment_slide
+    elif _is_incident_slide(content):
         renderer = _build_incident_slide
     else:
         renderer = _get_renderer(content.slide_type)
@@ -1135,6 +1350,53 @@ def build_slide(
                 tf.text = content.notes
         except Exception:
             pass
+
+    return renderer.__name__
+
+
+def _remove_last_slide(prs: Presentation) -> None:
+    """Remove the last slide from the presentation (for retry rebuilds)."""
+    sld_id_lst = prs.slides._sldIdLst
+    if not len(sld_id_lst):
+        return
+    last = sld_id_lst[-1]
+    ns_r = NSMAP["r"]
+    r_id = last.get(f"{{{ns_r}}}id")
+    if r_id:
+        try:
+            prs.part.drop_rel(r_id)
+        except Exception:
+            pass
+    sld_id_lst.remove(last)
+
+
+def _quick_slide_score(slide, sw: int, sh: int) -> float:
+    """Fast inline quality check for a just-built slide. Returns 0–100."""
+    from pptx_template_transfer.helpers import text_of
+    score = 100.0
+    text_shapes = [s for s in slide.shapes if text_of(s)]
+    if not text_shapes:
+        return 0.0
+    # Bounds penalty
+    for shape in slide.shapes:
+        r = (shape.left or 0) + (shape.width or 0)
+        b = (shape.top or 0) + (shape.height or 0)
+        if r > sw * 1.02 or b > sh * 1.02:
+            score -= 10
+        if (shape.left or 0) < -sw * 0.01:
+            score -= 5
+    # Font size penalty
+    for shape in slide.shapes:
+        if not shape.has_text_frame:
+            continue
+        for para in shape.text_frame.paragraphs:
+            for run in para.runs:
+                if run.font.size and run.font.size.pt < 7:
+                    score -= 5
+    return max(0.0, score)
+
+
+_RETRY_THRESHOLD = 40.0  # retry if quick score below this
 
 
 # ---------------------------------------------------------------------------
@@ -1196,6 +1458,9 @@ def apply_recreate(
         content_ratio, template_ratio
     )
     use_text_blocks = ratio_diff < 0.15  # Within 15% aspect ratio = safe
+
+    # Save original text_blocks for coverage validation before clearing
+    original_text_blocks: list[list] = [list(cd.text_blocks) for cd in content_list]
 
     if not use_text_blocks:
         print(
@@ -1260,8 +1525,39 @@ def apply_recreate(
                 "section_label": "converter_generated_bridge",
             },
         }
+        # Record section label confidence in report
+        _sl, _sl_conf = _generate_section_label(cd)
+        slide_report["section_label"] = _sl
+        slide_report["label_confidence"] = round(_sl_conf, 2)
+
         try:
-            build_slide(output_prs, style, cd, i + 1, ct, config.branding)
+            renderer_name = build_slide(output_prs, style, cd, i + 1, ct, config.branding)
+            slide_report["renderer_used"] = renderer_name
+
+            # Quick quality check — retry with generic renderer if below threshold
+            built_slide = output_prs.slides[-1]
+            qscore = _quick_slide_score(built_slide, style.slide_width, style.slide_height)
+            is_specialized = renderer_name not in ("_build_generic_content_slide", "_build_title_slide")
+            if qscore < _RETRY_THRESHOLD and is_specialized:
+                _remove_last_slide(output_prs)
+                # Force generic renderer by temporarily overriding slide_type
+                orig_type = cd.slide_type
+                cd.slide_type = "content_narrative"
+                renderer_name = build_slide(output_prs, style, cd, i + 1, ct, config.branding)
+                cd.slide_type = orig_type
+                slide_report["renderer_used"] = renderer_name
+                slide_report["retry_reason"] = f"original score {qscore:.0f} < {_RETRY_THRESHOLD:.0f}"
+
+            # Track dropped content reasons
+            dropped: list[str] = []
+            if cd.tables:
+                dropped.append(f"{len(cd.tables)} table(s) not rebuilt (no table renderer)")
+            if cd.charts:
+                dropped.append(f"{len(cd.charts)} chart(s) dropped (chart rebuild unsupported)")
+            if cd.images:
+                dropped.append(f"{len(cd.images)} image(s) dropped (image transfer unsupported)")
+            if dropped:
+                slide_report["dropped_content"] = dropped
             print(
                 f"  Slide {i+1}/{ct}: [{cd.slide_type}] "
                 f'"{cd.title[:50] if cd.title else "(no title)"}"'
@@ -1269,6 +1565,7 @@ def apply_recreate(
         except Exception as exc:
             slide_report["status"] = "error"
             slide_report["error"] = str(exc)
+            slide_report["renderer_used"] = "failed"
             report["errors"].append(f"Slide {i+1}: {exc}")
             log.error(
                 "Slide %d failed: %s\n%s", i + 1, exc, traceback.format_exc()
@@ -1304,6 +1601,11 @@ def apply_recreate(
         for w in contamination:
             print(f"  WARNING: {w}")
 
+    # Restore original text_blocks for coverage validation
+    for cd, orig_blocks in zip(content_list, original_text_blocks):
+        if not cd.text_blocks and orig_blocks:
+            cd.text_blocks = orig_blocks
+
     # Source coverage check
     coverage = compute_source_coverage(output_prs_check, content_list)
     report["source_coverage"] = {
@@ -1320,6 +1622,9 @@ def apply_recreate(
                 "tables_dropped": e.tables_dropped,
                 "images_dropped": e.images_dropped,
                 "charts_dropped": e.charts_dropped,
+                "blocks_total": e.blocks_total,
+                "blocks_covered": e.blocks_covered,
+                "missing_block_texts": e.missing_block_texts,
             }
             for e in coverage.entries
         ],

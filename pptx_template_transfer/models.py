@@ -42,7 +42,11 @@ class Thresholds:
 
 @dataclass
 class BrandingPolicy:
-    """Controls how source and target branding are handled in the output."""
+    """Controls how source and target branding are handled in the output.
+
+    All boolean flags default to True for "target" mode.  Set to False
+    to suppress individual branding elements deterministically.
+    """
     # "target" = use target footer/logo/conf, "source" = keep source, "hybrid" = target shell + source attribution
     mode: str = "target"
     # Override footer company text (None = auto-detect from target)
@@ -53,6 +57,10 @@ class BrandingPolicy:
     add_source_attribution: bool = False
     # Source company name for attribution (auto-detected if None)
     source_company: str | None = None
+    # Deterministic element toggles
+    show_logo: bool = True
+    show_footer: bool = True
+    show_confidentiality: bool = True
 
 
 @dataclass
@@ -174,6 +182,9 @@ class SourceCoverageEntry:
     charts_dropped: int = 0
     images_dropped: int = 0
     rebuild_method: str = "native"  # native | fallback | split | summarized
+    blocks_total: int = 0
+    blocks_covered: int = 0
+    missing_block_texts: list[str] = field(default_factory=list)
 
 
 @dataclass

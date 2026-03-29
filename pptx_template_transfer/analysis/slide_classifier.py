@@ -268,14 +268,7 @@ def classify_slide_type(slide, slide_index: int, total_slides: int,
     if tables or charts:
         return "data_table"
 
-    # --- Closing/conclusion ---
-    closing_kw = {"thank", "contact", "questions", "q&a", "reference", "next steps", "conclusion"}
-    if slide_index == total_slides - 1 and total_words <= 40:
-        return "closing"
-    if any(kw in all_text for kw in closing_kw) and total_words <= 60:
-        return "closing"
-
-    # --- Agenda ---
+    # --- Agenda (check BEFORE closing — agenda slides list closing-sounding items) ---
     agenda_kw = {"agenda", "outline", "table of contents"}
     title_text = ""
     if big:
@@ -291,6 +284,13 @@ def classify_slide_type(slide, slide_index: int, total_slides: int,
         return "agenda"
     if any(kw in all_text for kw in agenda_kw) and total_words <= 40:
         return "agenda"
+
+    # --- Closing/conclusion ---
+    closing_kw = {"thank", "contact", "questions", "q&a", "reference", "next steps", "conclusion"}
+    if slide_index == total_slides - 1 and total_words <= 40:
+        return "closing"
+    if any(kw in all_text for kw in closing_kw) and total_words <= 60:
+        return "closing"
 
     # --- Metrics/KPI dashboard ---
     # Look for 3+ short text blocks containing numbers

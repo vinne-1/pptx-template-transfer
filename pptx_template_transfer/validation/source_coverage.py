@@ -88,6 +88,32 @@ def compute_source_coverage(
         entry.output_slide_indices = sorted(set(mapped_indices))
         entry.text_used_pct = round(best_coverage * 100, 1)
 
+        # Block-level coverage: check each text_block individually
+        all_output_words: set[str] = set()
+        for oi in mapped_indices:
+            all_output_words |= output_word_sets[oi]
+
+        blocks = cd.text_blocks or []
+        entry.blocks_total = len(blocks)
+        entry.blocks_covered = 0
+        entry.missing_block_texts = []
+        for block in blocks:
+            block_words = set()
+            for para in block.paragraphs:
+                if para.text:
+                    block_words.update(para.text.lower().split())
+            if not block_words:
+                entry.blocks_covered += 1  # empty block counts as covered
+                continue
+            overlap = block_words & all_output_words
+            block_cov = len(overlap) / len(block_words)
+            if block_cov >= 0.40:
+                entry.blocks_covered += 1
+            else:
+                # Store first 120 chars of block text for diagnostics
+                block_text = " ".join(p.text for p in block.paragraphs)
+                entry.missing_block_texts.append(block_text[:120])
+
         # Track dropped assets
         entry.tables_dropped = len(cd.tables)  # TODO: detect if tables were rebuilt
         entry.charts_dropped = len(cd.charts)
