@@ -9,7 +9,7 @@ from typing import Any
 from pptx import Presentation
 
 from pptx_template_transfer.models import (
-    ContentData, ParagraphData, RunData, TextBlock, Thresholds,
+    ContentData, ImageData, ParagraphData, RunData, TextBlock, Thresholds,
 )
 from pptx_template_transfer.helpers import (
     FOOTER_PATTERNS, PH_FOOTER_SET, PH_TITLE_SET,
@@ -242,9 +242,14 @@ def extract_content(
             if area_pct > th.image_min_area_pct:
                 try:
                     blob = shape.image.blob
-                    content.images.append(
-                        (blob, shape.width, shape.height, shape.left or 0, shape.top or 0),
-                    )
+                    content.images.append(ImageData(
+                        blob=blob,
+                        width=shape.width,
+                        height=shape.height,
+                        left=shape.left or 0,
+                        top=shape.top or 0,
+                        content_type=getattr(shape.image, "content_type", ""),
+                    ))
                 except Exception:
                     pass
 

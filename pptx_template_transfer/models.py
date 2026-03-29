@@ -136,12 +136,23 @@ class TextBlock:
 
 
 @dataclass
+class ImageData:
+    """A source image with position and dimensions (EMU units)."""
+    blob: bytes = b""
+    width: int = 0
+    height: int = 0
+    left: int = 0
+    top: int = 0
+    content_type: str = ""
+
+
+@dataclass
 class ContentData:
     title: str = ""
     body_paragraphs: list[ParagraphData] = field(default_factory=list)
     text_blocks: list[TextBlock] = field(default_factory=list)
     tables: list[dict] = field(default_factory=list)
-    images: list[tuple] = field(default_factory=list)
+    images: list[ImageData] = field(default_factory=list)
     charts: list[Any] = field(default_factory=list)
     has_chart: bool = False
     slide_type: str = "content"

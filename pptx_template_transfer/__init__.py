@@ -12,6 +12,7 @@ from __future__ import annotations
 from pptx_template_transfer.models import (
     BoundsIssue,
     ContentData,
+    ImageData,
     LayoutPattern,
     LayoutZone,
     OverlapIssue,

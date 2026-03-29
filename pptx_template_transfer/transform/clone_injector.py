@@ -773,7 +773,12 @@ def _handle_images(
     for shape in cloned_slide.shapes:
         occupied.append((shape.top or 0) + (shape.height or 0))
 
-    for blob, orig_w, orig_h, _, _ in content_data.images:
+    for img in content_data.images:
+        from pptx_template_transfer.models import ImageData
+        if isinstance(img, ImageData):
+            blob, orig_w, orig_h = img.blob, img.width, img.height
+        else:
+            blob, orig_w, orig_h = img[0], img[1], img[2]
         max_bottom = max(occupied, default=int(slide_h * 0.3))
         avail_top = min(max_bottom + int(Pt(10).emu), int(slide_h * 0.85))
         avail_h = slide_h - avail_top

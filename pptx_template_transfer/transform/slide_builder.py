@@ -552,23 +552,28 @@ def _add_table(
 
 def _add_content_images(
     slide, style: TemplateStyle,
-    images: list[tuple],
+    images: list,
     start_top: int,
     has_body_text: bool = True,
     preserve_position: bool = False,
 ) -> None:
     """Place content images on the slide with adaptive layout."""
+    from pptx_template_transfer.models import ImageData
+
     sw, sh = style.slide_width, style.slide_height
+
+    # Normalize: support both ImageData and legacy tuples
+    def _img(img):
+        if isinstance(img, ImageData):
+            return img.blob, img.width, img.height, img.left, img.top
+        blob = img[0]
+        return blob, img[1], img[2], (img[3] if len(img) > 3 else 0), (img[4] if len(img) > 4 else start_top)
 
     # Separate positioned vs fallback images
     positioned: list[tuple] = []
     fallback: list[tuple] = []
-    for img_tuple in images:
-        blob = img_tuple[0]
-        orig_w, orig_h = img_tuple[1], img_tuple[2]
-        orig_left = img_tuple[3] if len(img_tuple) > 3 else 0
-        orig_top = img_tuple[4] if len(img_tuple) > 4 else start_top
-
+    for img in images:
+        blob, orig_w, orig_h, orig_left, orig_top = _img(img)
         if preserve_position and orig_left > 0 and orig_top > 0:
             positioned.append((blob, orig_w, orig_h, orig_left, orig_top))
         else:
@@ -1548,16 +1553,16 @@ def apply_recreate(
                 slide_report["renderer_used"] = renderer_name
                 slide_report["retry_reason"] = f"original score {qscore:.0f} < {_RETRY_THRESHOLD:.0f}"
 
-            # Track dropped content reasons
+            # Track dropped and placed content
             dropped: list[str] = []
             if cd.tables:
                 dropped.append(f"{len(cd.tables)} table(s) not rebuilt (no table renderer)")
             if cd.charts:
                 dropped.append(f"{len(cd.charts)} chart(s) dropped (chart rebuild unsupported)")
-            if cd.images:
-                dropped.append(f"{len(cd.images)} image(s) dropped (image transfer unsupported)")
             if dropped:
                 slide_report["dropped_content"] = dropped
+            if cd.images:
+                slide_report["images_placed"] = len(cd.images)
             print(
                 f"  Slide {i+1}/{ct}: [{cd.slide_type}] "
                 f'"{cd.title[:50] if cd.title else "(no title)"}"'
