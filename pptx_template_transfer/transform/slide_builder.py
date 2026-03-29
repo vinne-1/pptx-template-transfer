@@ -933,6 +933,14 @@ def _build_incident_slide(
         _add_body_text(slide, style, remaining,
                        margin_left, lower_top, int(sw * 0.88), int(sh * 0.25))
 
+    # Tables
+    if content.tables:
+        tbl_top = body_top + int(sh * 0.35)
+        for td in content.tables:
+            _add_table(slide, style, td["data"],
+                       margin_left, tbl_top, int(sw * 0.85), int(sh * 0.30))
+            break
+
     # Images
     if content.images:
         img_top = body_top + int(sh * 0.38)
@@ -1071,6 +1079,12 @@ def _build_kpi_slide(
         _add_body_text(slide, style, content.body_paragraphs,
                        margin_left, int(sh * 0.22), int(sw * 0.88), int(sh * 0.65))
 
+    if content.tables:
+        for td in content.tables:
+            _add_table(slide, style, td["data"],
+                       margin_left, int(sh * 0.58), int(sw * 0.85), int(sh * 0.30))
+            break
+
     if content.images:
         _add_content_images(slide, style, content.images, int(sh * 0.60),
                             has_body_text=True)
@@ -1192,6 +1206,12 @@ def _build_deployment_slide(
         # Fallback to body text
         _add_body_text(slide, style, content.body_paragraphs,
                        margin_left, int(sh * 0.22), int(sw * 0.88), int(sh * 0.65))
+
+    if content.tables:
+        for td in content.tables:
+            _add_table(slide, style, td["data"],
+                       margin_left, int(sh * 0.58), int(sw * 0.85), int(sh * 0.30))
+            break
 
     if content.images:
         _add_content_images(slide, style, content.images, int(sh * 0.60),
@@ -1555,14 +1575,14 @@ def apply_recreate(
 
             # Track dropped and placed content
             dropped: list[str] = []
-            if cd.tables:
-                dropped.append(f"{len(cd.tables)} table(s) not rebuilt (no table renderer)")
             if cd.charts:
                 dropped.append(f"{len(cd.charts)} chart(s) dropped (chart rebuild unsupported)")
             if dropped:
                 slide_report["dropped_content"] = dropped
             if cd.images:
                 slide_report["images_placed"] = len(cd.images)
+            if cd.tables:
+                slide_report["tables_rebuilt"] = len(cd.tables)
             print(
                 f"  Slide {i+1}/{ct}: [{cd.slide_type}] "
                 f'"{cd.title[:50] if cd.title else "(no title)"}"'

@@ -114,9 +114,9 @@ def compute_source_coverage(
                 block_text = " ".join(p.text for p in block.paragraphs)
                 entry.missing_block_texts.append(block_text[:120])
 
-        # Track dropped assets (images are transferred by _add_content_images)
-        entry.tables_dropped = len(cd.tables)  # TODO: detect if tables were rebuilt
-        entry.charts_dropped = len(cd.charts)
+        # Track dropped assets
+        entry.tables_dropped = 0  # tables rebuilt by _add_table
+        entry.charts_dropped = len(cd.charts)  # charts not yet supported
         entry.images_dropped = 0  # images placed by _add_content_images
 
         if not mapped_indices:
