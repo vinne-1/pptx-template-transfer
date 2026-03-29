@@ -13,7 +13,7 @@ from typing import Any
 from pptx import Presentation
 from pptx.util import Emu
 
-from pptx_template_transfer.models import TransferConfig, Thresholds
+from pptx_template_transfer.models import BrandingPolicy, TransferConfig, Thresholds
 from pptx_template_transfer.helpers import text_of, word_count, max_font_pt, shape_area_pct
 from pptx_template_transfer.analysis.slide_classifier import (
     classify_all_shapes, get_slide_zones,
@@ -153,7 +153,7 @@ def _cli_extract(pptx_path: Path) -> None:
             ],
             "tables": [t["data"] for t in cd.tables],
             "images": [
-                {"width": img[1], "height": img[2], "blob_size": len(img[0])}
+                {"width": img.width, "height": img.height, "blob_size": len(img.blob)}
                 for img in cd.images
             ],
             "has_chart": cd.has_chart,
@@ -195,6 +195,12 @@ def main() -> None:
                         help="Write quality validation report to this path")
     parser.add_argument("--no-notes", action="store_true",
                         help="Skip speaker notes transfer")
+    parser.add_argument("--no-logo", action="store_true",
+                        help="Suppress logo in output")
+    parser.add_argument("--no-footer", action="store_true",
+                        help="Suppress footer bar in output")
+    parser.add_argument("--footer-company", type=str, default=None,
+                        help="Override footer company name")
     parser.add_argument("--analyze", action="store_true",
                         help="Analyze a single PPTX: classify every shape on every slide")
     parser.add_argument("--extract", action="store_true",
@@ -237,18 +243,20 @@ def main() -> None:
     if args.slide_map and args.slide_map.exists():
         slide_map = json.loads(args.slide_map.read_text())
 
-    config = TransferConfig(
-        mode=args.mode, verbose=args.verbose, slide_map=slide_map,
-        preserve_notes=not args.no_notes, report_path=args.report,
+    branding = BrandingPolicy(
+        show_logo=not args.no_logo,
+        show_footer=not args.no_footer,
+        footer_company_override=args.footer_company,
     )
 
-    mode = config.mode or detect_mode(template_path)
-    if config.mode is None:
+    mode = args.mode or detect_mode(template_path)
+    if args.mode is None:
         print(f"Auto-detected mode: {mode}")
+
     config = TransferConfig(
-        mode=mode, verbose=config.verbose, slide_map=config.slide_map,
-        preserve_notes=config.preserve_notes, thresholds=config.thresholds,
-        report_path=config.report_path,
+        mode=mode, verbose=args.verbose, slide_map=slide_map,
+        preserve_notes=not args.no_notes, report_path=args.report,
+        branding=branding,
     )
 
     if mode == "recreate":

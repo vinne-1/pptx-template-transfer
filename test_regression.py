@@ -410,3 +410,154 @@ class TestGeneralization:
         slide = prs.slides.add_slide(prs.slide_layouts[6])
         cd = extract_content(slide, 0, 1, prs.slide_width, prs.slide_height, Thresholds())
         assert cd.word_count == 0
+
+
+# ---------------------------------------------------------------------------
+# J. Reverse direction regression (Airowire content → Aaritya style)
+# ---------------------------------------------------------------------------
+
+class TestReverseTransfer:
+    """Transfer in reverse direction must also produce clean output."""
+
+    @pytest.fixture(scope="class")
+    def reverse_result(self, tmp_path_factory):
+        out = tmp_path_factory.mktemp("reverse") / "output_reverse.pptx"
+        # Aaritya as STYLE source, Airowire as CONTENT source
+        config = TransferConfig(mode="recreate")
+        return transfer(SOURCE_PATH, TARGET_PATH, out, config)
+
+    @pytest.fixture(scope="class")
+    def reverse_prs(self, reverse_result, tmp_path_factory):
+        # Re-read the generated file
+        out = tmp_path_factory.mktemp("reverse_read") / "output_reverse.pptx"
+        config = TransferConfig(mode="recreate")
+        transfer(SOURCE_PATH, TARGET_PATH, out, config)
+        return Presentation(str(out))
+
+    def test_reverse_slide_count(self, reverse_result):
+        """Reverse transfer should produce slides matching Airowire content count."""
+        slides = reverse_result["slides"]
+        assert len(slides) == 7  # Airowire has 7 slides
+
+    def test_reverse_no_errors(self, reverse_result):
+        """No slide build errors in reverse direction."""
+        assert not reverse_result.get("errors", [])
+
+    def test_reverse_quality_above_threshold(self, reverse_result):
+        """Quality score should be above 70 even in reverse direction."""
+        assert reverse_result["quality"]["overall_score"] >= 70
+
+    def test_reverse_coverage_above_threshold(self, reverse_result):
+        """Source coverage should be above 80%."""
+        assert reverse_result["source_coverage"]["overall_pct"] >= 80
+
+    def test_reverse_no_dropped_content(self, reverse_result):
+        """No false 'dropped content' messages (images/tables are transferred)."""
+        for s in reverse_result["slides"]:
+            dropped = s.get("dropped_content", [])
+            # Only charts should appear as dropped
+            for d in dropped:
+                assert "chart" in d.lower(), f"Unexpected dropped content: {d}"
+
+
+# ---------------------------------------------------------------------------
+# K. Edge-case robustness
+# ---------------------------------------------------------------------------
+
+class TestEdgeCases:
+    """Stress tests for edge-case inputs."""
+
+    def test_single_slide_source(self, tmp_path):
+        """Transfer with a 1-slide source should not crash."""
+        from pptx.util import Inches
+        # Create a minimal 1-slide source
+        src = Presentation()
+        src.slide_width = Inches(13.333)
+        src.slide_height = Inches(7.5)
+        slide = src.slides.add_slide(src.slide_layouts[6])
+        tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(1))
+        tb.text_frame.text = "Single Slide Content"
+        src_path = tmp_path / "single.pptx"
+        src.save(str(src_path))
+
+        out = tmp_path / "out_single.pptx"
+        result = transfer(TARGET_PATH, src_path, out)
+        assert len(result["slides"]) == 1
+        assert not result.get("errors", [])
+
+    def test_empty_body_slide(self, tmp_path):
+        """A slide with title but no body should render without error."""
+        from pptx.util import Inches, Pt as PxPt
+        src = Presentation()
+        src.slide_width = Inches(13.333)
+        src.slide_height = Inches(7.5)
+        slide = src.slides.add_slide(src.slide_layouts[6])
+        tb = slide.shapes.add_textbox(Inches(1), Inches(0.5), Inches(10), Inches(1))
+        p = tb.text_frame.paragraphs[0]
+        p.text = "Title Only Slide"
+        p.font.size = PxPt(28)
+        src_path = tmp_path / "title_only.pptx"
+        src.save(str(src_path))
+
+        out = tmp_path / "out_title_only.pptx"
+        result = transfer(TARGET_PATH, src_path, out)
+        assert len(result["slides"]) == 1
+        assert not result.get("errors", [])
+
+    def test_very_long_text(self, tmp_path):
+        """A slide with very long body text should not crash or overflow."""
+        from pptx.util import Inches
+        src = Presentation()
+        src.slide_width = Inches(13.333)
+        src.slide_height = Inches(7.5)
+        slide = src.slides.add_slide(src.slide_layouts[6])
+        # Title
+        tb = slide.shapes.add_textbox(Inches(1), Inches(0.5), Inches(10), Inches(1))
+        tb.text_frame.text = "Stress Test Slide"
+        # Long body
+        tb2 = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(10), Inches(4))
+        tb2.text_frame.word_wrap = True
+        long_text = "This is a test sentence with enough words to matter. " * 50
+        tb2.text_frame.text = long_text
+        src_path = tmp_path / "long_text.pptx"
+        src.save(str(src_path))
+
+        out = tmp_path / "out_long.pptx"
+        result = transfer(TARGET_PATH, src_path, out)
+        assert not result.get("errors", [])
+        # Quality should still be reasonable
+        assert result["quality"]["overall_score"] >= 50
+
+    def test_many_slides(self, tmp_path):
+        """A source with 30+ slides should transfer without error."""
+        from pptx.util import Inches
+        src = Presentation()
+        src.slide_width = Inches(13.333)
+        src.slide_height = Inches(7.5)
+        for i in range(30):
+            slide = src.slides.add_slide(src.slide_layouts[6])
+            tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(1))
+            tb.text_frame.text = f"Slide {i+1} content paragraph about topic {i+1}."
+        src_path = tmp_path / "many_slides.pptx"
+        src.save(str(src_path))
+
+        out = tmp_path / "out_many.pptx"
+        result = transfer(TARGET_PATH, src_path, out)
+        assert len(result["slides"]) == 30
+        assert not result.get("errors", [])
+
+    def test_special_characters(self, tmp_path):
+        """Unicode and special chars in content should not crash."""
+        from pptx.util import Inches
+        src = Presentation()
+        src.slide_width = Inches(13.333)
+        src.slide_height = Inches(7.5)
+        slide = src.slides.add_slide(src.slide_layouts[6])
+        tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(8), Inches(2))
+        tb.text_frame.text = "Ünïcödé: 日本語テスト • bullets — dashes « quotes » ñ ø å"
+        src_path = tmp_path / "unicode.pptx"
+        src.save(str(src_path))
+
+        out = tmp_path / "out_unicode.pptx"
+        result = transfer(TARGET_PATH, src_path, out)
+        assert not result.get("errors", [])
