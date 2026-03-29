@@ -176,8 +176,28 @@ log = logging.getLogger("pptx_template_transfer")
 # ---------------------------------------------------------------------------
 
 
+_template_bg_xml: bytes | None = None  # Cached template background XML
+
+
 def _add_background(slide, style: TemplateStyle) -> None:
-    """Set slide background color."""
+    """Set slide background, cloning template background if available."""
+    global _template_bg_xml
+    if _template_bg_xml:
+        # Clone the template's actual background (may be gradient, pattern, image)
+        try:
+            ns_p = NSMAP["p"]
+            bg_el = etree.fromstring(_template_bg_xml)
+            slide_csld = slide._element.find(f"{{{ns_p}}}cSld")
+            if slide_csld is not None:
+                # Remove existing bg if any
+                existing_bg = slide_csld.find(f"{{{ns_p}}}bg")
+                if existing_bg is not None:
+                    slide_csld.remove(existing_bg)
+                slide_csld.insert(0, bg_el)
+                return
+        except Exception:
+            pass
+    # Fallback: solid color
     bg = slide.background
     fill = bg.fill
     fill.solid()
@@ -410,10 +430,27 @@ def _render_paragraph(
                 if remapped:
                     run_color = remapped
             run.font.color.rgb = rgb(run_color)
+            # Preserve hyperlinks
+            if rd.hyperlink_url:
+                try:
+                    run.hyperlink.address = rd.hyperlink_url
+                    run.font.underline = True
+                    run.font.color.rgb = rgb(style.color_primary)
+                except Exception:
+                    pass
     else:
         p.text = pd.text
         style_runs(p, font_name=fname, font_size_pt=font_size_pt,
                     bold=default_bold, color_hex=color)
+        # Single-run hyperlink
+        if pd.runs and len(pd.runs) == 1 and pd.runs[0].hyperlink_url:
+            try:
+                for run in p.runs:
+                    run.hyperlink.address = pd.runs[0].hyperlink_url
+                    run.font.underline = True
+                    run.font.color.rgb = rgb(style.color_primary)
+            except Exception:
+                pass
 
 
 def _add_body_text(
@@ -1626,6 +1663,35 @@ def apply_recreate(
                 f"title='{cd.title[:40]}', paras={len(cd.body_paragraphs)}, "
                 f"tables={len(cd.tables)}, images={len(cd.images)}"
             )
+
+    # Strip notes if not preserving
+    if not config.preserve_notes:
+        for cd in content_list:
+            cd.notes = ""
+
+    # Cache template background XML for cloning (gradient/pattern/image fills)
+    global _template_bg_xml
+    _template_bg_xml = None
+    try:
+        tpl_prs = Presentation(str(template_path))
+        ns_p = NSMAP["p"]
+        for tpl_slide in tpl_prs.slides:
+            csld = tpl_slide._element.find(f"{{{ns_p}}}cSld")
+            if csld is not None:
+                bg_el = csld.find(f"{{{ns_p}}}bg")
+                if bg_el is not None:
+                    _template_bg_xml = etree.tostring(bg_el)
+                    break
+        # Also check slide master if no slide-level background
+        if not _template_bg_xml:
+            master = tpl_prs.slide_masters[0]
+            csld = master.element.find(f"{{{ns_p}}}cSld")
+            if csld is not None:
+                bg_el = csld.find(f"{{{ns_p}}}bg")
+                if bg_el is not None:
+                    _template_bg_xml = etree.tostring(bg_el)
+    except Exception:
+        pass
 
     # Step 3: Build output — use template as base to preserve theme/masters
     print(f"\n[recreate] Building {ct} slides from scratch...")

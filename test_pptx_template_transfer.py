@@ -1062,3 +1062,112 @@ class TestFindBlankLayout:
 
         # Default presentations have a Blank layout
         assert layout is not None
+
+
+# ---------------------------------------------------------------------------
+# Color remapping tests
+# ---------------------------------------------------------------------------
+
+class TestColorRemapping:
+    """Test color remap table construction and application."""
+
+    def test_build_color_remap_basic(self):
+        from pptx_template_transfer.analysis.theme_extractor import build_color_remap
+        src = {"primary": "008299", "secondary": "0096AF"}
+        tgt = {"primary": "2563EB", "secondary": "F97316"}
+        remap = build_color_remap(src, tgt)
+        assert remap["008299"] == "2563EB"
+        assert remap["0096AF"] == "F97316"
+
+    def test_build_color_remap_same_color_no_remap(self):
+        from pptx_template_transfer.analysis.theme_extractor import build_color_remap
+        src = {"primary": "2563EB", "secondary": "333333"}
+        tgt = {"primary": "2563EB", "secondary": "F97316"}
+        remap = build_color_remap(src, tgt)
+        # primary is same, should not be in remap
+        assert "2563EB" not in remap
+        assert remap["333333"] == "F97316"
+
+    def test_remap_color_exact_match(self):
+        from pptx_template_transfer.analysis.theme_extractor import remap_color
+        table = {"008299": "2563EB"}
+        assert remap_color("008299", table) == "2563EB"
+
+    def test_remap_color_near_neighbor(self):
+        from pptx_template_transfer.analysis.theme_extractor import remap_color
+        table = {"008299": "2563EB"}
+        # 0082A0 is close to 008299 (distance ~7)
+        result = remap_color("0082A0", table)
+        assert result == "2563EB"
+
+    def test_remap_color_no_match(self):
+        from pptx_template_transfer.analysis.theme_extractor import remap_color
+        table = {"008299": "2563EB"}
+        # FF0000 is far from 008299
+        assert remap_color("FF0000", table) is None
+
+    def test_remap_color_empty_table(self):
+        from pptx_template_transfer.analysis.theme_extractor import remap_color
+        assert remap_color("008299", {}) is None
+
+    def test_remap_color_none_input(self):
+        from pptx_template_transfer.analysis.theme_extractor import remap_color
+        assert remap_color(None, {"008299": "2563EB"}) is None
+
+
+# ---------------------------------------------------------------------------
+# RunData color extraction test
+# ---------------------------------------------------------------------------
+
+class TestRunDataColor:
+    """Test that per-run color is extracted from source content."""
+
+    def test_run_data_has_color_field(self):
+        rd = RunData(text="hello", color_hex="FF0000")
+        assert rd.color_hex == "FF0000"
+
+    def test_run_data_color_default_none(self):
+        rd = RunData(text="hello")
+        assert rd.color_hex is None
+
+
+# ---------------------------------------------------------------------------
+# Hyperlink preservation test
+# ---------------------------------------------------------------------------
+
+class TestHyperlinkPreservation:
+    """Test that hyperlinks are wired into output runs."""
+
+    def test_hyperlink_in_output(self, simple_pptx: Path):
+        """Build a slide with a hyperlinked run, verify it appears in output."""
+        prs = Presentation(str(simple_pptx))
+        style = TemplateStyle(
+            slide_width=prs.slide_width, slide_height=prs.slide_height,
+            heading_font="Arial", body_font="Arial",
+        )
+        content = ContentData(
+            title="Test Links",
+            body_paragraphs=[
+                ParagraphData(
+                    text="Click here for docs",
+                    runs=[
+                        RunData(text="Click here", hyperlink_url="https://example.com"),
+                        RunData(text=" for docs"),
+                    ],
+                ),
+            ],
+            slide_type="content_narrative",
+        )
+        build_slide(prs, style, content, 1, 1)
+        slide = prs.slides[-1]
+        found_link = False
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for para in shape.text_frame.paragraphs:
+                    for run in para.runs:
+                        try:
+                            if run.hyperlink and run.hyperlink.address == "https://example.com":
+                                found_link = True
+                        except Exception:
+                            pass
+        assert found_link, "Hyperlink should be preserved in output run"
