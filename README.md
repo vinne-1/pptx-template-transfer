@@ -26,14 +26,19 @@ Source PPTX (content)     Target PPTX (style)
        (source meaning, target grammar)
 ```
 
-## Requirements
+## Installation
 
-- Python 3.10+
-- `python-pptx` and `Pillow`
+Requires Python 3.10+.
 
 ```bash
-pip install -r requirements.txt
+# From the project directory
+pip install -e .
+
+# Or install dependencies directly
+pip install python-pptx lxml
 ```
+
+This installs the `pptx-transfer` CLI command and the `pptx_template_transfer` Python package.
 
 ## Quick Start
 
@@ -41,19 +46,32 @@ pip install -r requirements.txt
 
 ```bash
 # template = style source, content = content source
-python -m pptx_template_transfer.cli template.pptx content.pptx output.pptx
+pptx-transfer template.pptx content.pptx output.pptx
+
+# Or via python -m
+python -m pptx_template_transfer template.pptx content.pptx output.pptx
 
 # With verbose diagnostics
-python -m pptx_template_transfer.cli template.pptx content.pptx output.pptx --verbose
+pptx-transfer template.pptx content.pptx output.pptx --verbose
 
 # JSON report for automation
-python -m pptx_template_transfer.cli template.pptx content.pptx output.pptx --report report.json
+pptx-transfer template.pptx content.pptx output.pptx --report report.json
+
+# Quality validation report
+pptx-transfer template.pptx content.pptx output.pptx --quality-report quality.json
+
+# Branding controls
+pptx-transfer template.pptx content.pptx output.pptx --no-logo --no-footer
+pptx-transfer template.pptx content.pptx output.pptx --footer-company "Acme Corp"
+
+# Named arguments (alternative syntax)
+pptx-transfer --target template.pptx --source content.pptx --output output.pptx
 
 # Analyze template shape classifications
-python -m pptx_template_transfer.cli --analyze template.pptx
+pptx-transfer --analyze template.pptx
 
 # Extract structured content as JSON
-python -m pptx_template_transfer.cli --extract content.pptx
+pptx-transfer --extract content.pptx
 ```
 
 ### Programmatic API
@@ -76,9 +94,9 @@ config = TransferConfig(
     preserve_notes=True,
     thresholds=Thresholds(title_min_font_pt=18),
     branding=BrandingPolicy(
-        mode="target",
+        show_logo=True,
+        show_footer=True,
         footer_company_override="My Company",
-        confidentiality_label="Internal Only",
     ),
 )
 report = transfer(template, content, output, config)
@@ -121,8 +139,8 @@ pptx_template_transfer/
 ### 1. Template Analysis
 
 Extracts the target deck's visual DNA:
-- **Fonts**: Heading and body fonts from theme XML, with frequency-scan fallback
-- **Colors**: Primary, secondary, text, muted, background, card, line -- using saturation-based classification
+- **Fonts**: Heading and body fonts from theme XML, with frequency-scan fallback. Exotic fonts (Montserrat, Lato, Poppins, etc.) are auto-resolved to safe system fonts (Calibri, Segoe UI, Arial)
+- **Colors**: Primary, secondary, text, muted, background, card, line -- using saturation-based classification. Source deck colors are also extracted for future remapping
 - **Logo**: Most frequently repeated image across slides
 - **Footer**: Company name, confidentiality notice, page number format (requires 2+ slide repetition)
 - **Layout patterns**: Column counts, zone roles, text capacities
@@ -132,8 +150,8 @@ Extracts the target deck's visual DNA:
 Parses each source slide into structured data:
 - **Title**: Multi-signal scoring (placeholder type, font size, position, word count)
 - **Body paragraphs**: Ordered text with level, bold/italic, font size, per-run hyperlinks
-- **Tables**: Cell text matrices with formatting
-- **Images**: Content images above area threshold
+- **Tables**: Cell text matrices with formatting (rebuilt in output with template styling)
+- **Images**: Content images above area threshold (transferred with position preservation)
 - **Charts**: Chart elements for transfer
 - **Speaker notes**: Full text from notes pane
 - **Slide type**: title, agenda, content_narrative, metrics_dashboard, comparison, image_heavy, etc.
@@ -156,9 +174,12 @@ Each output slide is built from scratch using type-specific renderers:
 Every slide gets:
 - Background color from template
 - Decorative accent shapes in template colors
-- Logo in top-left
-- Section label (auto-generated from slide type or title)
-- Footer with company name, confidentiality label, page number
+- Logo in top-left (toggleable via `--no-logo`)
+- Section label (auto-generated with confidence scoring, body-keyword fallback)
+- Footer with company name, confidentiality label, page number (toggleable via `--no-footer`)
+- Images transferred with position preservation
+- Tables rebuilt with template-styled formatting
+- Auto-retry: slides scoring below threshold are retried with the generic renderer
 
 ### 4. Content Provenance
 
@@ -203,17 +224,16 @@ th = Thresholds(
 
 ### Branding Policy
 
-Control how source and target branding appear in the output:
+Control how branding elements appear in the output:
 
 ```python
 from pptx_template_transfer import BrandingPolicy
 
 branding = BrandingPolicy(
-    mode="target",                          # "target" | "source" | "hybrid"
+    show_logo=True,                         # Include template logo (--no-logo to disable)
+    show_footer=True,                       # Include footer bar (--no-footer to disable)
+    show_confidentiality=True,              # Include "Confidential" label in footer
     footer_company_override="My Company",   # Override auto-detected footer text
-    confidentiality_label="Internal Only",  # Override "Confidential" label
-    add_source_attribution=True,            # Add "Presented by" on title slide
-    source_company="Acme Corp",             # Source company name for attribution
 )
 ```
 
@@ -264,10 +284,10 @@ The `transfer()` function returns a comprehensive report:
 # Unit tests (76 tests)
 python -m pytest test_pptx_template_transfer.py -v
 
-# Regression tests (26 tests, requires sample decks)
+# Regression tests (36 tests, requires sample decks)
 python -m pytest test_regression.py -v
 
-# All tests
+# All tests (112 total)
 python -m pytest -v
 ```
 
@@ -293,6 +313,11 @@ Regression tests verify:
 - Density-aware font scaling based on line count
 - Footer detection requires text repetition on 2+ slides to avoid false positives
 - Per-slide error isolation: one failed slide doesn't abort the deck
+- Font substitution: exotic fonts auto-resolved to safe system fonts via fallback table
+- Image transfer preserves position using percentage-based coordinates
+- Tables rebuilt with template-styled headers and alternating row colors
+- Auto-retry: slides scoring below 40/100 are retried with the generic renderer
+- Block-level source coverage: 40% word overlap threshold per text block
 
 ## License
 

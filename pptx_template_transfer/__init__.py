@@ -11,6 +11,7 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 from pptx_template_transfer.models import (
     BoundsIssue,
+    BrandingPolicy,
     ContentData,
     ImageData,
     LayoutPattern,
@@ -136,7 +137,8 @@ from pptx_template_transfer.cli import _validate_input  # noqa: F811
 
 __all__ = [
     # Models
-    "BoundsIssue", "ContentData", "LayoutPattern", "LayoutZone",
+    "BoundsIssue", "BrandingPolicy", "ContentData", "ImageData",
+    "LayoutPattern", "LayoutZone",
     "OverlapIssue", "ParagraphData", "QualityReport", "RunData",
     "SemanticBlock", "ShapeInfo", "SlideQuality", "TemplateStyle",
     "TextBlock", "Thresholds", "TransferConfig",
