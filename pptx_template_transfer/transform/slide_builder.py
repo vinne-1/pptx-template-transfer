@@ -32,6 +32,9 @@ from pptx_template_transfer.models import (
 # Module-level branding context (set by build_slide / apply_recreate)
 _current_branding: BrandingPolicy = BrandingPolicy()
 
+# Module-level color remap table (set by apply_recreate)
+_color_remap: dict[str, str] = {}
+
 # ---------------------------------------------------------------------------
 # Section label generation
 # ---------------------------------------------------------------------------
@@ -398,7 +401,15 @@ def _render_paragraph(
             run.font.size = Pt(font_size_pt)
             run.font.bold = rd.bold or default_bold
             run.font.italic = rd.italic
-            run.font.color.rgb = rgb(color)
+            # Apply color remapping: if the run had a source accent color,
+            # remap it to the corresponding template accent color.
+            run_color = color
+            if rd.color_hex and _color_remap:
+                from pptx_template_transfer.analysis.theme_extractor import remap_color
+                remapped = remap_color(rd.color_hex, _color_remap)
+                if remapped:
+                    run_color = remapped
+            run.font.color.rgb = rgb(run_color)
     else:
         p.text = pd.text
         style_runs(p, font_name=fname, font_size_pt=font_size_pt,
@@ -636,6 +647,81 @@ def _add_content_images(
                 slide.shapes.add_picture(io.BytesIO(blob), img_left, img_top, w, h)
             except Exception:
                 pass
+
+
+def _add_charts(slide, style: TemplateStyle, charts: list[dict]) -> int:
+    """Transfer chart elements from source to output slide.
+
+    Copies the graphicFrame XML and creates relationships to the chart part.
+    Returns the number of charts successfully placed.
+    """
+    placed = 0
+    sw, sh = style.slide_width, style.slide_height
+    ns_r = NSMAP["r"]
+
+    for ci in charts:
+        try:
+            src_element = ci["element"]
+            chart_part = ci["chart_part"]
+            width = ci.get("width", int(sw * 0.6))
+            height = ci.get("height", int(sh * 0.4))
+            left = ci.get("left", int(sw * 0.1))
+            top = ci.get("top", int(sh * 0.25))
+
+            # Create a relationship from the output slide to the chart part
+            slide_part = slide.part
+            rel = slide_part.relate_to(chart_part, chart_part.content_type.replace(
+                "application/vnd.openxmlformats-officedocument.",
+                "http://schemas.openxmlformats.org/officeDocument/2006/relationships/",
+            ).replace("presentationml.chart+xml", "chart").replace(
+                "drawingml.chart+xml", "chart"
+            ))
+            # Actually, use the standard chart relationship type
+            from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+            # Drop the incorrect rel and create proper one
+            try:
+                slide_part.drop_rel(rel)
+            except Exception:
+                pass
+            rel_type = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart"
+            r_id = slide_part.relate_to(chart_part, rel_type)
+
+            # Clone the graphicFrame element and update its relationship ID
+            from copy import deepcopy
+            gf = deepcopy(src_element)
+
+            # Update position/size
+            ns_a = NSMAP["a"]
+            ns_p = NSMAP["p"]
+            xfrm = gf.find(f".//{{{ns_a}}}xfrm")
+            if xfrm is None:
+                xfrm = gf.find(f".//{{{ns_p}}}xfrm")
+            if xfrm is not None:
+                off = xfrm.find(f"{{{ns_a}}}off")
+                ext = xfrm.find(f"{{{ns_a}}}ext")
+                if off is not None:
+                    off.set("x", str(left))
+                    off.set("y", str(top))
+                if ext is not None:
+                    ext.set("cx", str(width))
+                    ext.set("cy", str(height))
+
+            # Update the chart relationship ID in the graphic data
+            for node in gf.iter():
+                for attr_name, attr_val in list(node.attrib.items()):
+                    if attr_name == f"{{{ns_r}}}id" or attr_name == "id":
+                        if attr_val.startswith("rId"):
+                            node.set(attr_name, r_id)
+
+            # Append the graphicFrame to the slide's spTree
+            sp_tree = slide._element.find(f".//{{{ns_p}}}spTree")
+            if sp_tree is not None:
+                sp_tree.append(gf)
+                placed += 1
+        except Exception as exc:
+            log.debug("Chart transfer failed: %s", exc)
+
+    return placed
 
 
 # ---------------------------------------------------------------------------
@@ -1284,6 +1370,10 @@ def _build_generic_content_slide(
                             has_body_text=bool(content.body_paragraphs),
                             preserve_position=bool(content.text_blocks))
 
+    # Charts
+    if content.charts:
+        _add_charts(slide, style, content.charts)
+
 
 # ---------------------------------------------------------------------------
 # Slide type → renderer dispatch
@@ -1462,14 +1552,21 @@ def apply_recreate(
     )
     print(f"  Footer: '{style.footer_company}'")
 
-    # Extract source colors for reference
+    # Extract source colors and build remap table
     source_colors = extract_source_colors(content_path)
-    report["source_colors"] = source_colors
-    report["target_colors"] = {
+    target_colors = {
         "primary": style.color_primary,
         "secondary": style.color_secondary,
         "text": style.color_text,
     }
+    report["source_colors"] = source_colors
+    report["target_colors"] = target_colors
+
+    from pptx_template_transfer.analysis.theme_extractor import build_color_remap
+    global _color_remap
+    _color_remap = build_color_remap(source_colors, target_colors)
+    if _color_remap:
+        print(f"  Color remap: {_color_remap}")
 
     # Step 2: Extract content
     print("\n[recreate] Extracting content...")
@@ -1584,16 +1681,13 @@ def apply_recreate(
                 slide_report["renderer_used"] = renderer_name
                 slide_report["retry_reason"] = f"original score {qscore:.0f} < {_RETRY_THRESHOLD:.0f}"
 
-            # Track dropped and placed content
-            dropped: list[str] = []
-            if cd.charts:
-                dropped.append(f"{len(cd.charts)} chart(s) dropped (chart rebuild unsupported)")
-            if dropped:
-                slide_report["dropped_content"] = dropped
+            # Track placed content
             if cd.images:
                 slide_report["images_placed"] = len(cd.images)
             if cd.tables:
                 slide_report["tables_rebuilt"] = len(cd.tables)
+            if cd.charts:
+                slide_report["charts_transferred"] = len(cd.charts)
             print(
                 f"  Slide {i+1}/{ct}: [{cd.slide_type}] "
                 f'"{cd.title[:50] if cd.title else "(no title)"}"'

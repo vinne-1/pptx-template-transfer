@@ -42,9 +42,17 @@ def _extract_paragraphs_from_shape(shape) -> list[ParagraphData]:
                     r_url = run.hyperlink.address
             except Exception:
                 pass
+            r_color = None
+            try:
+                c = run.font.color
+                if c and c.type is not None and c.rgb:
+                    r_color = str(c.rgb)
+            except (AttributeError, TypeError):
+                pass
             runs_data.append(RunData(
                 text=run.text, bold=r_bold, italic=r_italic,
                 font_size=r_size, hyperlink_url=r_url,
+                color_hex=r_color,
             ))
             if r_bold:
                 bold = True

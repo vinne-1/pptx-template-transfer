@@ -111,6 +111,7 @@ class RunData:
     italic: bool = False
     font_size: float = 0.0
     hyperlink_url: str | None = None
+    color_hex: str | None = None  # Original source color (e.g. "008299")
 
 
 @dataclass

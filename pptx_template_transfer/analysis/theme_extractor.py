@@ -270,6 +270,55 @@ def extract_source_colors(content_path: Path) -> dict[str, str]:
     return result
 
 
+def _color_distance(c1: str, c2: str) -> float:
+    """Euclidean distance between two hex color strings (0-441)."""
+    r1, g1, b1 = int(c1[:2], 16), int(c1[2:4], 16), int(c1[4:6], 16)
+    r2, g2, b2 = int(c2[:2], 16), int(c2[2:4], 16), int(c2[4:6], 16)
+    return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
+
+
+def build_color_remap(
+    source_colors: dict[str, str],
+    target_colors: dict[str, str],
+) -> dict[str, str]:
+    """Build a mapping from source accent colors to target accent colors.
+
+    Maps source primary → target primary, source secondary → target secondary.
+    Also adds near-neighbor mapping: any source color within distance 60 of
+    a mapped source color gets the same target.
+
+    Returns a dict of hex→hex mappings (no '#' prefix).
+    Neutral colors (near-black, near-white, grays) are NOT remapped.
+    """
+    remap: dict[str, str] = {}
+
+    src_primary = source_colors.get("primary", "")
+    src_secondary = source_colors.get("secondary", "")
+    tgt_primary = target_colors.get("primary", "")
+    tgt_secondary = target_colors.get("secondary", "")
+
+    if src_primary and tgt_primary and src_primary != tgt_primary:
+        remap[src_primary] = tgt_primary
+    if src_secondary and tgt_secondary and src_secondary != tgt_secondary:
+        remap[src_secondary] = tgt_secondary
+
+    return remap
+
+
+def remap_color(hex_color: str | None, remap_table: dict[str, str]) -> str | None:
+    """Remap a single color using the remap table. Returns None if no match."""
+    if not hex_color or not remap_table:
+        return None
+    # Exact match
+    if hex_color in remap_table:
+        return remap_table[hex_color]
+    # Near-neighbor match (within distance 60)
+    for src, tgt in remap_table.items():
+        if _color_distance(hex_color, src) < 60:
+            return tgt
+    return None
+
+
 def analyze_template(template_path: Path) -> TemplateStyle:
     """Analyze a template PPTX and extract its visual DNA."""
     prs = Presentation(str(template_path))
